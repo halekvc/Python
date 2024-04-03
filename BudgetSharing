@@ -1,0 +1,530 @@
+# =============================================================================
+# Author            : Hale Kavoosi
+# Email             : hlh.kavoosi@gmail.com
+# Created Date      : 2023-08-20 00:00:00
+# Last Modified Date:
+# Last Modified By  :
+# Version           : 1.0.0
+# Python Version    : 3.5.2
+# =============================================================================
+import psycopg2
+import jdatetime
+import pandas as pd
+from flask import Flask, jsonify, request, json
+from flask_cors import CORS, cross_origin
+from ftplib import FTP
+import sys
+
+sys.path.insert(1, '/home/hduser/programs/configs/')
+import dbconfigs
+import servicesconfig
+
+postgres_config = dbconfigs.postgres_config
+
+app = Flask(__name__)
+cors = CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+app.config['SECRET_KEY'] = servicesconfig.secret_key
+
+
+def logger(*args):
+    """
+    logging function
+    :return:
+    """
+    with open(__file__.split(".")[0] + ".log", "a") as f:
+        print(jdatetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "->", *args, file=f)
+    print(jdatetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "->", *args)
+
+
+def get_postgresql_connection():
+    """
+    Connect to Postgresql
+    :return: connection object
+    """
+    try:
+        conn = psycopg2.connect(**postgres_config)
+        return conn
+    except Exception as ex:
+        logger("Error @get_postgresql_connection:", ex)
+        return None
+
+
+def get_data(indicator):
+    try:
+        with FTP('ftp.sked.org', 'kalandadeh', 'MTKLan54!') as ftp:
+            ftp.cwd('/Application/Amar360/2061')
+            with open("2061.xlsx", 'wb') as downloaded_file:
+                ftp.retrbinary('RETR ' + "2061.xlsx", downloaded_file.write)
+
+        df = pd.read_excel("2061.xlsx", sheet_name='اصلاح', header=1)
+        df = df.loc[df['شرح زير شاخص'] != ' ضريب بهره برداري پستهاي  توزيع']
+        df = df.loc[df['شرح زير شاخص'].notna()]
+        df['شرح شاخص كلي'].fillna(method='ffill', inplace=True)
+        df['وزن شاخص كلي (از 100)'] *= 100
+        df['وزن شاخص كلي (از 100)'].fillna(method='ffill', inplace=True)
+        if indicator == 'reliability':
+            df = df.loc[df['شرح شاخص كلي'].isin(['قابليت اطمينان شبكه'])]
+        elif indicator == 'losses':
+            df = df.loc[df['شرح شاخص كلي'].isin(['تلفات شبكه '])]
+        elif indicator == 'volumetric':
+            df = df.loc[df['شرح شاخص كلي'].isin(['شاخصهاي حجمي شبكه '])]
+        df.dropna(how='all', subset=df.iloc[:, 5:21].columns.tolist(), inplace=True)
+        df = df.where(pd.notnull(df), 0)
+
+        for i in range(5, 22):
+            df.iloc[:, i] = df.iloc[:, i] / df.iloc[:, 21] * df.iloc[:, 4]
+            df.iloc[:, i] = df.iloc[:, i].astype(float)
+
+        df = df.round(3)
+        df = df.drop(df.columns[df.columns.str.contains('Unnamed', na=False)], axis=1)
+
+        return df
+    except Exception as ex:
+        logger("Error @insert_items:", ex)
+
+
+def get_weight():
+    try:
+        with FTP('ftp.sked.org', 'kalandadeh', 'MTKLan54!') as ftp:
+            ftp.cwd('/Application/Amar360/2061')
+            with open("2061.xlsx", 'wb') as downloaded_file:
+                ftp.retrbinary('RETR ' + "2061.xlsx", downloaded_file.write)
+
+        df = pd.read_excel("2061.xlsx", sheet_name='اصلاح', header=1)
+        df['شرح شاخص كلي'].fillna(method='ffill', inplace=True)
+        df['وزن شاخص كلي (از 100)'] *= 100
+        df['وزن شاخص كلي (از 100)'].fillna(method='ffill', inplace=True)
+        df = df[['شرح شاخص كلي', 'وزن شاخص كلي (از 100)']]
+        df = df.loc[df['شرح شاخص كلي'].isin(['قابليت اطمينان شبكه', 'تلفات شبكه ', 'شاخصهاي حجمي شبكه '])]
+        df = df.drop_duplicates()
+        df['وزن شاخص كلي (از 100)'] = df['وزن شاخص كلي (از 100)'].astype(float)
+        df['وزن شاخص كلي (از 100)'] = df['وزن شاخص كلي (از 100)'].round(2)
+        return df
+    except Exception as ex:
+        logger("Error @get_weight:", ex)
+
+
+def get_credit():
+    try:
+        with FTP('ftp.sked.org', 'kalandadeh', 'MTKLan54!') as ftp:
+            ftp.cwd('/Application/Amar360/2061')
+            with open("2061.xlsx", 'wb') as downloaded_file:
+                ftp.retrbinary('RETR ' + "2061.xlsx", downloaded_file.write)
+
+        df_c = pd.read_excel("2061.xlsx", sheet_name='تقسيم بندي اعتبارات ', header=2)
+        df_c = df_c.loc[1:17]
+        df_c = df_c[['رديف', 'شهرستان', 'اعتبار كل']]
+
+        df = pd.read_excel("2061.xlsx", sheet_name='اصلاح', header=1)
+        df = df.loc[df['شرح زير شاخص'] != ' ضريب بهره برداري پستهاي  توزيع']
+        df = df.loc[df['شرح زير شاخص'].notna()]
+        df['شرح شاخص كلي'].fillna(method='ffill', inplace=True)
+        df['وزن شاخص كلي (از 100)'].fillna(method='ffill', inplace=True)
+        df = df.where(pd.notnull(df), 0)
+
+        grouped_df = df.groupby('وزن شاخص كلي (از 100)').agg(
+            {'ارزوئیه': 'sum', 'بافت': 'sum', 'بردسیر': 'sum', 'بم': 'sum',
+             'جیرفت': 'sum', 'رابر': 'sum',
+             'رودبارجنوب': 'sum', 'ریگان': 'sum', 'سیرجان': 'sum', 'عنبرآباد': 'sum',
+             'فاریاب': 'sum', 'فهرج': 'sum',
+             'قلعه گنج': 'sum', 'کهنوج': 'sum', 'منوجان': 'sum', 'نرماشیر': 'sum'
+             })
+        grouped_df = grouped_df.apply(lambda row: row * row.name, axis=1)
+        grouped_df = grouped_df.sum().reset_index()
+
+        df = df_c.merge(grouped_df, left_on='شهرستان', right_on='index', how='left')
+        sum_score = df[0].sum()
+        df.loc[df["رديف"] == 'جمع', 0] = sum_score
+        df["نمره"] = df[0].round(3)
+        df['درصد از كل'] = ((df[0] / sum_score) * 100).round(3)
+        sum_credit = df.loc[df["رديف"] == 'جمع', 'اعتبار كل'].values.tolist()[0]
+        df['اعتبار كل(میلیون ریال)'] = (sum_credit * df['درصد از كل'] / 100).round(3)
+        df['اعتبار كل(میلیون ریال)'] = df['اعتبار كل(میلیون ریال)'].apply(lambda x: '{:,}'.format(x))
+        df = df[['رديف', 'شهرستان', 'نمره', 'درصد از كل', 'اعتبار كل(میلیون ریال)']]
+
+        return df
+    except Exception as ex:
+        logger("Error @insert_items:", ex)
+
+
+def get_omoor():
+    conn = get_postgresql_connection()
+    try:
+        res = pd.read_sql('SELECT "OmoorNmae", "OmoorCode" FROM public."DW_Omoor" where "OmoorCode" != 1 ', conn)
+        # res.loc[res["OmoorCode"] == 1, "OmoorNmae"] = "کل شرکت"
+        return res
+    except (Exception, psycopg2.DatabaseError) as error:
+        print("@get_omoor :" + error)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def card(indicatorId, unitId='', unitName=''):
+    df = get_weight()
+    data = [
+        {
+            "cardHeader": "<span style='color:white;font-size:18px;' dir='rtl'>قابليت اطمينان شبكه</span>",
+            "className": "col-md-3",
+            "firstColor": "#237A57",
+            "iconImg": "/static_files/reliability.png",
+            "iconWidth": "64px",
+            "number": "",
+            "secondColor": "#093028",
+            "text": 'وزن شاخص كلي (از 100): ' + str(
+                df.loc[df['شرح شاخص كلي'] == "قابليت اطمينان شبكه", 'وزن شاخص كلي (از 100)'].tolist()[0]),
+            "onclick": [
+                {
+                    "indicatorid": indicatorId,
+                    "type": "company",
+                    "method": "",
+                    "params": {"indicator": "reliability",
+                               "unitId": unitId,
+                               "unitName": unitName
+                               }
+                }
+            ]
+        },
+        {
+            "cardHeader": "<span style='color:white;font-size:18px;' dir='rtl'>تلفات شبكه</span>",
+            "className": "col-md-3",
+            "firstColor": "#4ecdc4",
+            "iconImg": "/static_files/losses.png",
+            "iconWidth": "64px",
+            "number": "",
+            "secondColor": "#556270",
+            "text": 'وزن شاخص كلي (از 100): ' + str(
+                df.loc[df['شرح شاخص كلي'] == "تلفات شبكه ", 'وزن شاخص كلي (از 100)'].tolist()[0]),
+            "onclick": [
+                {
+                    "indicatorid": indicatorId,
+                    "type": "company",
+                    "method": "",
+                    "params": {"indicator": "losses",
+                               "unitId": unitId,
+                               "unitName": unitName}
+                }
+            ]
+        },
+        {
+            "cardHeader": "<span style='color:white;font-size:18px;' dir='rtl'>شاخصهاي حجمي شبكه</span>",
+            "className": "col-md-3",
+            "firstColor": "#734b6d",
+            "iconImg": "/static_files/volumetric.png",
+            "iconWidth": "64px",
+            "number": "",
+            "secondColor": "#42275a",
+            "text": 'وزن شاخص كلي (از 100): ' + str(
+                df.loc[df['شرح شاخص كلي'] == "شاخصهاي حجمي شبكه ", 'وزن شاخص كلي (از 100)'].tolist()[0]),
+            "onclick": [
+                {
+                    "indicatorid": indicatorId,
+                    "type": "company",
+                    "method": "",
+                    "params": {"indicator": "volumetric",
+                               "unitId": unitId,
+                               "unitName": unitName, }
+                }
+            ]
+        }
+    ]
+    return data
+
+
+@app.route('/tabs', methods=['GET'])  # indicatorId: 512    type: company
+@cross_origin()
+def tabs():
+    try:
+        ret = [
+            {
+                "title": "شاخص",
+                "disabled": False,
+                "default": True,
+                "onclick": [
+                    {
+                        "indicatorid": 518,
+                        "type": "company",
+                        "method": "get",
+                        "params": {}
+                    }
+                ]
+            },
+            {
+                "title": "شهرستان",
+                "disabled": False,
+                "onclick": [
+                    {
+                        "indicatorid": 511,
+                        "type": "company",
+                        "method": "get",
+                        "params": {}
+                    }
+                ]
+            }
+        ]
+
+        ret_json = [{"type": "sidebar-infinite", "title": "", "menuItems": ret}]
+        return jsonify(ret_json), 200
+    except Exception as ex:
+        logger("Error @tabs:", ex)
+        return jsonify(ret_json)
+
+
+@app.route('/cards', methods=['GET'])  # indicatorId: 518    type: company
+@cross_origin()
+def cards():
+    try:
+        input_params = request.args.to_dict()
+        unitId = input_params.get("unitId", '')
+        unitName = input_params.get("unitName", '')
+
+        indicatorId = 510 if unitId == '' else 513
+        data = card(indicatorId, unitId, unitName)
+        ret_json = [{"type": "section-card", "data": data}]
+        return jsonify(ret_json), 200
+
+    except Exception as ex:
+        logger("Error @cards:", ex)
+        return jsonify(ret_json)
+
+
+@app.route('/budget_table', methods=['GET'])  # indicatorId: 510    type: company
+@cross_origin()
+def budget_table():
+    try:
+        input_params = request.args.to_dict()
+        indicator = input_params.get("indicator", '')
+
+        df = get_data(indicator)
+        df = df.where(pd.notnull(df), '')
+
+        df_weight = get_weight()
+
+        title = ''
+        if indicator == 'reliability':
+            title = 'قابليت اطمينان شبكه'
+            weight = \
+                df_weight.loc[df_weight['شرح شاخص كلي'] == "قابليت اطمينان شبكه", 'وزن شاخص كلي (از 100)'].tolist()[
+                    0] / 100
+        elif indicator == 'losses':
+            title = 'تلفات شبكه '
+            weight = df_weight.loc[df_weight['شرح شاخص كلي'] == "تلفات شبكه ", 'وزن شاخص كلي (از 100)'].tolist()[
+                         0] / 100
+        elif indicator == 'volumetric':
+            title = 'شاخصهاي حجمي شبكه '
+            weight = df_weight.loc[df_weight['شرح شاخص كلي'] == "شاخصهاي حجمي شبكه ", 'وزن شاخص كلي (از 100)'].tolist()[
+                         0] / 100
+
+        table_footer = [[
+            "مجموع",
+            None,
+            None,
+            None,
+            round(df["ارزوئیه"].sum() * weight, 3),
+            round(df["بافت"].sum() * weight, 3),
+            round(df["بردسیر"].sum() * weight, 3),
+            round(df["بم"].sum() * weight, 3),
+            round(df["جیرفت"].sum() * weight, 3),
+            round(df["رابر"].sum() * weight, 3),
+            round(df["رودبارجنوب"].sum() * weight, 3),
+            round(df["ریگان"].sum() * weight, 3),
+            round(df["سیرجان"].sum() * weight, 3),
+            round(df["عنبرآباد"].sum() * weight, 3),
+            round(df["فاریاب"].sum() * weight, 3),
+            round(df["فهرج"].sum() * weight, 3),
+            round(df["قلعه گنج"].sum() * weight, 3),
+            round(df["کهنوج"].sum() * weight, 3),
+            round(df["منوجان"].sum() * weight, 3),
+            round(df["نرماشیر"].sum() * weight, 3),
+            round(df["جمع کل"].sum() * weight, 3)
+        ]]
+
+        df["row"] = range(1, len(df) + 1)
+
+        df = df[["row", 'شرح زير شاخص', 'واحد شاخص ',
+                 'وزن زير شاخص (از 100)', 'ارزوئیه', 'بافت', 'بردسیر', 'بم', 'جیرفت',
+                 'رابر', 'رودبارجنوب', 'ریگان', 'سیرجان', 'عنبرآباد', 'فاریاب', 'فهرج',
+                 'قلعه گنج', 'کهنوج', 'منوجان', 'نرماشیر', 'جمع کل'
+                 ]]
+
+        ret_json = [{"type": "rich-table",
+                     "data": [{
+                         "export": [{"default": True, "persian_name": "خروجی اکسل", "type": "excel"}],
+                         "type": "joined",
+                         "groupid": 0,
+                         "title": "table2",
+                         "persian_title": "تسهیم بودجه " + title,
+                         "rowcount": len(df),
+                         "columns": df.columns.tolist(),
+                         "data": df.to_dict(orient='split')["data"],
+                         "paging": False,
+                         "footer": table_footer,
+                         "persian_columns": ["ردیف",
+                                             'شرح', 'واحد',
+                                             'وزن', 'ارزوئیه', 'بافت', 'بردسیر', 'بم', 'جیرفت',
+                                             'رابر', 'رودبارجنوب', 'ریگان', 'سیرجان', 'عنبرآباد', 'فاریاب', 'فهرج',
+                                             'قلعه گنج', 'کهنوج', 'منوجان', 'نرماشیر', 'جمع کل'
+                                             ],
+                         "columns_info": [{"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+                                          {"type": 'text', "isShow": True},
+
+                                          {"type": 'text', "isShow": True}
+                                          ]
+                     }]
+                     }]
+
+        return jsonify(ret_json), 200
+
+    except Exception as e:
+        print(e)
+        return jsonify({'title': 'خطا', 'message': 'خطایی رخ داده است'}), 500
+
+
+@app.route('/map', methods=['GET'])  # indicatorId: 511    type: company
+def budget_map():
+    try:
+        df_credit = get_credit()
+        df_credit = df_credit.where(pd.notnull(df_credit), '')
+        columns_info = [{"type": 'text', "isShow": True}] * len(df_credit.columns.tolist())
+        ret_json = [{"type": "rich-table",
+                     "data": [{
+                         "export": [{"default": True, "persian_name": "خروجی اکسل", "type": "excel"}],
+                         "type": "joined",
+                         "groupid": 0,
+                         "title": "table2",
+                         "persian_title": "تقسیم بندی اعتبارات ",
+                         "rowcount": len(df_credit),
+                         "columns": df_credit.columns.tolist(),
+                         "data": df_credit.to_dict(orient='split')["data"],
+                         "paging": False,
+                         "persian_columns": df_credit.columns.tolist(),
+                         "columns_info": columns_info
+                     }]
+                     }]
+
+        df = get_omoor()
+        df["onclick"] = df.apply(lambda row: [
+            {
+                "indicatorid": "518",
+                "type": "company",
+                "method": "get",
+                "params": {
+                    "unitId": row["OmoorCode"],
+                    "unitName": row["OmoorNmae"]
+                },
+            }
+        ], axis=1)
+        df["id"] = df["OmoorCode"]
+        df["y"] = 1
+        df["color"] = '#4683B7'
+        df["tooltip"] = df["OmoorNmae"]
+        map_json = json.load(open("map.json", "r"))
+        map_json["title"]["text"] = "شهرستان ها"
+        map_json["series"][0]["data"] = df[["y", "id", "color", "onclick", "tooltip", "OmoorNmae"]].to_dict(
+            orient="records")
+
+        ret_json += [{"type": "map", "data": map_json, "className": "col-md-12", "id": 4}]
+        return jsonify(ret_json), 200
+    except Exception as e:
+        logger("ERROR @budget_map:", e)
+        return jsonify({'title': 'خطا', 'message': 'خطایی رخ داده است'}), 500
+
+
+@app.route('/budget_table_omoor', methods=['GET'])  # indicatorId: 513    type: company
+@cross_origin()
+def budget_table_omoor():
+    try:
+        input_params = request.args.to_dict()
+        indicator = input_params.get("indicator", '')
+        unitId = input_params.get("unitId", '')
+        unitName = input_params.get("unitName", '')
+
+        df = get_data(indicator)
+        df.rename(columns={'ارزوئیه': 13,
+                           'بافت': 3,
+                           'بردسیر': 9,
+                           'بم': 4,
+                           'جیرفت': 6,
+                           'رابر': 15,
+                           'رودبارجنوب': 8,
+                           'ریگان': 11,
+                           'سیرجان': 2,
+                           'عنبرآباد': 10,
+                           'فاریاب': 17,
+                           'فهرج': 14,
+                           'قلعه گنج': 18,
+                           'کهنوج': 5,
+                           'منوجان': 7,
+                           'نرماشیر': 16
+                           }, inplace=True)
+        df = df.T
+
+        new_header = df.iloc[0]
+        df = df[1:]
+        df.set_axis(new_header, axis='columns', inplace=True)
+        if indicator == 'reliability':
+            title = 'قابليت اطمينان شبكه'
+        elif indicator == 'losses':
+            title = 'تلفات شبكه '
+        elif indicator == 'volumetric':
+            title = 'شاخصهاي حجمي شبكه '
+        df = df[[title]]
+        df[[title]].reset_index()
+
+        new_header = df.iloc[1]
+        df = df[1:]
+        df.set_axis(new_header, axis='columns', inplace=True)
+        df = df.reset_index()
+        df = df.loc[df["index"] == int(unitId)]
+        df.drop(columns=['index'], inplace=True)
+        df = df.where(pd.notnull(df), '')
+        columns_info = [{"type": 'text', "isShow": True}] * len(df.columns.tolist())
+
+        ret_json = [{"type": "rich-table",
+                     "data": [{
+                         "export": [{"default": True, "persian_name": "خروجی اکسل", "type": "excel"}],
+                         "type": "joined",
+                         "groupid": 0,
+                         "title": "table2",
+                         "persian_title": "تسهیم بودجه " + title + " شهرستان " + unitName,
+                         "rowcount": len(df),
+                         "columns": df.columns.tolist(),
+                         "data": df.to_dict(orient='split')["data"],
+                         "paging": False,
+                         "persian_columns": df.columns.tolist(),
+                         "columns_info": columns_info
+                     }]
+                     }]
+
+        return jsonify(ret_json), 200
+
+    except Exception as e:
+        print(e)
+        return jsonify({'title': 'خطا', 'message': 'خطایی رخ داده است'}), 500
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5353, debug=False, use_reloader=False)
